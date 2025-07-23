@@ -1,0 +1,23 @@
+<style>
+  .radar-header {
+    padding-bottom: 1rem;
+    overflow: hidden;
+  }
+
+  .radar-header picture img {
+    width: 100%;                     /* Scale image to container width */
+    height: auto;                    /* Maintain aspect ratio */
+    display: block;                  /* Removes bottom whitespace */
+  }
+</style>
+
+<div class="radar-header">
+  <img
+    src="{{< relurl >}}/images/radar-header.jpg"
+    srcset="
+      {{< relurl >}}/images/radar-header@3x.jpg 3x,
+      {{< relurl >}}/images/radar-header@2x.jpg 2x,
+      {{< relurl >}}/images/radar-header.jpg 1x
+    "
+    alt="RADAR Banner">
+</div>

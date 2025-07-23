@@ -1,0 +1,183 @@
+# Create directory
+# dir.create("data", showWarnings = FALSE)
+
+# # Download dataset
+# curl::multi_download(
+#   "https://data.cityofnewyork.us/api/views/nc67-uf89/rows.csv?accessType=DOWNLOAD",
+#   "data/open-violations.csv",
+#   resume = TRUE
+# )
+
+# Set working directory
+setwd("/Users/andrew/GitHub/super-speeders")
+
+# Libraries
+library(tidyverse)
+library(arrow)
+library(lubridate)
+
+# arrow::open_dataset(...) creates a pointer to the file, doesn't load to memory
+violations_csv <- open_dataset("data/open-violations.csv",
+                               format = "csv")
+# Convert to parquet
+violations_csv |> 
+  write_dataset(path = "data/parquet",
+                format = "parquet")
+
+# Create pointer to parquet
+violations_pq <- open_dataset("data/parquet")
+
+# Take a look
+# collect() calls the computation of above code
+violations_pq |> 
+  glimpse() |> 
+  collect()
+
+### What is the total amount owed in unpaid fines by cars with n speeding tickets in 2024? ###
+# Use str_detect(`Issue Date`, "2024") to filter for dates formatted as mm/dd/yyy and yyyy-mm-ddThh:mm:ss.sss
+q <- violations_pq |> 
+  filter(str_detect(`Issue Date`, "2024") & str_detect(Violation, "SPEED") & `Amount Due` > 0) |>
+  group_by(State, Plate) |> 
+  summarize(n_tickets = n(), owed_ind = sum(`Amount Due`, na.rm = T)) |> 
+  group_by(n_tickets) |> 
+  summarize(total_owed = sum(owed_ind)) |> 
+  arrange(desc(n_tickets)) |> 
+  collect()
+
+  
+### How many cars with n speeding tickets in 2024 owe $350 or more? ###
+r <- violations_pq |> 
+  filter(str_detect(`Issue Date`, "2024") & str_detect(Violation, "SPEED") & `Amount Due` > 0) |>
+  group_by(State, Plate) |> 
+  summarize(n_tickets = n(), owed_ind = sum(`Amount Due`, na.rm = T)) |>
+  filter(owed_ind >= 350) |> 
+  group_by(n_tickets) |> 
+  summarize(n_vehicles = n()) |> 
+  arrange(desc(n_tickets)) |> 
+  collect()
+
+### How many vehicles got a ticket that was not speeding-related in 2024? ###
+s <- violations_pq |> 
+  filter(str_detect(`Issue Date`, "2024") & !str_detect(Violation, "SPEED")) |>
+  group_by(State, Plate) |> 
+  summarize(n_non_speeding_tickets = n()) |> 
+  collect()
+
+### How many vehicles got a speeding ticket in 2024? ###
+t <- violations_pq |> 
+  filter(str_detect(`Issue Date`, "2024") & str_detect(Violation, "SPEED")) |>
+  group_by(State, Plate) |> 
+  summarize(n_speeding_tickets = n()) |> 
+  collect()
+
+### What percent of vehicles not from NY NJ PA CT got at least one ticket each month? ###
+nyc_metro <- c("NY", "NJ", "PA", "CT")
+
+# Number of non-metro area vehicles
+non_metro_violations <- violations_pq |> 
+  filter(str_detect(`Issue Date`, "2024") & !(State %in% nyc_metro)) |> 
+  group_by(State, Plate) |> 
+  summarize(n_tickets = n()) |> 
+  collect()
+
+# All non-metro violations
+non_metro_violations_months <- violations_pq |> 
+  filter(str_detect(`Issue Date`, "2024") & !(State %in% nyc_metro)) |> 
+  collect()
+
+# Extract month from mm/dd/yyy dates
+non_metro_violations_months <- non_metro_violations_months |> 
+  mutate(Month = month(mdy(`Issue Date`)))
+
+# Separate successful extraction
+non_metro_violations_months_valid <- non_metro_violations_months |> 
+  filter(!is.na(Month))
+
+# Separate failed extraction - these violations have a datetime stamp, not date
+non_metro_violations_months_na <- non_metro_violations_months |> 
+  filter(is.na(Month))
+
+# Re extract month from datetime stamp
+non_metro_violations_months_na <- non_metro_violations_months_na |> 
+  mutate(Month = month(ymd_hms(`Issue Date`)))
+
+# Join, overwrite
+non_metro_violations_months <- bind_rows(non_metro_violations_months_valid,
+                                         non_metro_violations_months_na)
+
+# Aggregate by state, plate and create a list of months for each recived violation
+non_metro_vehicle_violation_months <- non_metro_violations_months |> 
+  group_by(State, Plate) |> 
+  summarize(ticket_months = list(Month))
+
+# Vector of all months
+all_months <- seq(1,12)
+
+# Add column that evaluates to TRUE if list of violation months contains every calendar month
+non_metro_vehicle_violation_months$all_months <- sapply(non_metro_vehicle_violation_months$ticket_months,
+                                                        function (x) all(all_months %in% x))
+
+# Number of non-metro vehicles with at least one ticket per month
+non_metro_ticket_all_months <- non_metro_vehicle_violation_months |> 
+  filter(all_months == TRUE)
+
+# Get percentage
+nrow(non_metro_ticket_all_months) / nrow(non_metro_violations) * 100 # 0.150%
+
+# What about non metro vehicles with 11 or more tickets?
+non_metro_speed_violations_gt10 <- violations_pq |> 
+  filter(str_detect(`Issue Date`, "2024") & str_detect(Violation, "SPEED") & !(State %in% nyc_metro)) |> 
+  group_by(State, Plate) |> 
+  summarize(n_tickets = n()) |> 
+  filter(n_tickets > 10) |> 
+  collect()
+
+# Get percentage
+nrow(non_metro_ticket_all_months) / nrow(non_metro_speed_violations_gt10) * 100 # 14.78%
+
+### How many FHVs had n tickets? ###
+fhv <- violations_pq |> 
+  filter(`License Type` == "OMT" & str_detect(`Issue Date`, "2024")) |> 
+  group_by(State, Plate) |> 
+  summarize(n_tickets = n()) |> 
+  group_by(n_tickets) |> 
+  summarize(n_fhv = n()) |> 
+  arrange(desc(n_tickets)) |> 
+  collect()
+
+# Write Excel file
+library(writexl)
+write_xlsx(list("Unpaid Fines" = q,
+             "Unpaid Fines, $350 or more" = r,
+             "FHV Tickets" = fhv),
+           "super_speeder_tables.xlsx")
+
+
+### Follow up questions ###
+# How many vehicles got N speeding violations in 2024 (unpaid or not?)
+n <- violations_pq |> 
+  filter(str_detect(`Issue Date`, "2024") & str_detect(Violation, "SPEED")) |>
+  group_by(State, Plate) |> 
+  summarize(n_tickets = n(), owed_ind = sum(`Amount Due`, na.rm = T)) |> 
+  group_by(n_tickets) |> 
+  summarize(n_vehicles = n(), total_owed = sum(owed_ind)) |> 
+  arrange(desc(n_tickets)) |> 
+  collect()
+
+
+### Take a closer look at VA TLN8692 ###
+VATLN8692 <- violations_pq |> 
+  filter(str_detect(`Issue Date`, "2024") & State == "VA" & Plate == "TLN8692") |> 
+  collect()
+  
+# 2024 owed fines, 27763.79
+sum(VATLN8692$`Amount Due`) 
+
+# Rich reports VA TLN8692 owing 36114.63 --- Do we get this if we include 2025 violations and do not filter only for speeding?
+VATLN8692_2425 <- violations_pq |> 
+  filter((str_detect(`Issue Date`, "2024") | str_detect(`Issue Date`, "2025")) & State == "VA" & Plate == "TLN8692") |> 
+  collect()
+
+sum(VATLN8692_2425$`Amount Due`)
+
+# Yes
