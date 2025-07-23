@@ -1,5 +1,6 @@
 project:
   type: website
+  resources: images
 
 website:
   navbar: false
@@ -15,6 +16,3 @@ format:
     
 execute:
   freeze: auto
-
-
-
